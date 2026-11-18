@@ -119,7 +119,10 @@
           (overlay-put next 'typst-inline-math-preview-anchor anchor))))))
 (defun typst-inline-math--filter (_ text)
   (let* ((all (concat typst-inline-math--partial text))
-         (lines (split-string all "\n")))
+         ;; JSONL responses end in a newline.  Preserve the final empty field
+         ;; so a complete response is handled now, rather than being appended
+         ;; to the next process-filter chunk.
+         (lines (split-string all "\n" nil)))
     (setq typst-inline-math--partial (car (last lines)))
     (dolist (line (butlast lines))
       (unless (string-empty-p line)
