@@ -74,7 +74,9 @@
           (when (< (point) limit) (forward-char 1))))
       (nreverse out))))
 (defun typst-inline-math--remove () (remove-overlays (point-min) (point-max) 'typst-inline-math t))
-(defun typst-inline-math--image (file) (list 'image :type 'svg :file file :ascent 'center :scale typst-inline-math-scale))
+(defun typst-inline-math--image (svg)
+  "Build an in-memory SVG image spec without creating a temporary file."
+  (list 'image :type 'svg :data svg :ascent 'center :scale typst-inline-math-scale))
 (defun typst-inline-math--active ()
   (let* ((position (point))
          (overlays (cl-remove-if-not (lambda (o) (overlay-get o 'typst-inline-math-svg))
@@ -146,10 +148,9 @@
   (pcase-let ((`(,buf ,a ,b ,source ,line-beg ,line-end) q))
     (when (buffer-live-p buf) (with-current-buffer buf
                                (when (and typst-inline-math-mode (equal source (buffer-substring-no-properties a b)))
-                                 (let ((file (make-temp-file "typst-math-" nil ".svg"))) (with-temp-file file (insert svg))
-                                   ;; Keep the old preview visible until this replacement is ready.
-                                   (remove-overlays a b 'typst-inline-math t)
-                                   (let ((o (make-overlay a b))) (overlay-put o 'typst-inline-math t) (overlay-put o 'evaporate t) (overlay-put o 'typst-inline-math-svg file) (when line-beg (overlay-put o 'typst-inline-math-line-beg line-beg) (overlay-put o 'typst-inline-math-line-end line-end)) (overlay-put o 'display (typst-inline-math--image file)) (typst-inline-math--active))))))))
+                                 ;; Keep the old preview visible until this replacement is ready.
+                                 (remove-overlays a b 'typst-inline-math t)
+                                 (let ((o (make-overlay a b))) (overlay-put o 'typst-inline-math t) (overlay-put o 'evaporate t) (overlay-put o 'typst-inline-math-svg svg) (when line-beg (overlay-put o 'typst-inline-math-line-beg line-beg) (overlay-put o 'typst-inline-math-line-end line-end)) (overlay-put o 'display (typst-inline-math--image svg)) (typst-inline-math--active)))))))
 (defun typst-inline-math--refresh (&optional changed-beg changed-end)
   (when typst-inline-math-mode
     (dolist (e (typst-inline-math--expressions))
