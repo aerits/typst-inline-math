@@ -51,7 +51,7 @@ Load `org-latex-typst-preview.el` and enable
 (add-hook 'org-mode-hook #'org-latex-typst-preview-mode)
 ```
 
-This repository's `config.el` already does that.  The mode supports
+The mode supports
 `$...$`, `$$...$$`, `\\(...\\)`, `\\[...\\]`, and LaTeX environments that
 Org recognizes as fragments.  Point inside a fragment reveals its source for
 editing; leaving it restores the SVG preview.
