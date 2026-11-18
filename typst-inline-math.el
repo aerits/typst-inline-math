@@ -7,7 +7,9 @@
   (list (expand-file-name "typst-renderd/target/release/typst-renderd"
                           (file-name-directory (or load-file-name buffer-file-name))))
   "Command used to start typst-renderd." :type '(repeat string) :group 'typst-inline-math)
-(defcustom typst-inline-math-font-size "1em" "Typst text size." :type 'string :group 'typst-inline-math)
+(defcustom typst-inline-math-font-size 1.0
+  "Multiplier applied to the Emacs face size when rendering math."
+  :type 'number :group 'typst-inline-math)
 (defcustom typst-inline-math-scale 1.0 "Emacs SVG scale." :type 'number :group 'typst-inline-math)
 
 (defvar typst-inline-math--process nil)
@@ -16,10 +18,30 @@
 (defvar typst-inline-math--requests (make-hash-table :test #'eql))
 (defvar-local typst-inline-math--timer nil)
 (defvar-local typst-inline-math--active nil)
+(defvar typst-inline-math--font-hook-installed nil)
 
 (defun typst-inline-math--foreground ()
   (let ((rgb (color-values (face-attribute 'default :foreground nil t))))
     (if rgb (apply #'format "#%02x%02x%02x" (mapcar (lambda (x) (/ x 256)) rgb)) "#000000")))
+(defun typst-inline-math--font-size (position)
+  "Return the buffer's effective default font size as a Typst point size."
+  ;; POSITION is retained so callers can later provide face-specific sizing.
+  ;; `face-at-point' may return a composite face spec in Doom, which is not a
+  ;; valid argument to `face-attribute' and caused type errors here.
+  (ignore position)
+  (let* ((height (face-attribute 'default :height nil t))
+         ;; Face heights are tenths of a point.  Fall back to 12pt if a frame
+         ;; has not resolved the default face yet.
+         (height (if (and (numberp height) (> height 10)) height 120))
+         (scale (if (numberp typst-inline-math-font-size)
+                    typst-inline-math-font-size
+                  1.0))
+         ;; text-scale-mode remaps `default' without changing its face
+         ;; attribute, so account for its buffer-local scale explicitly.
+         (text-scale (if (bound-and-true-p text-scale-mode)
+                         (expt text-scale-mode-step text-scale-mode-amount)
+                       1.0)))
+    (format "%.3fpt" (* scale text-scale (/ height 10.0)))))
 (defun typst-inline-math--escaped-p (p)
   (let ((n 0) (p (1- p))) (while (and (>= p (point-min)) (eq (char-after p) ?\\)) (setq n (1+ n) p (1- p))) (= 1 (% n 2))))
 (defun typst-inline-math--expressions ()
@@ -78,7 +100,7 @@
     ;; Keep the exact source range, including delimiters, so a response is
     ;; discarded only when that expression was genuinely edited in transit.
                                (puthash id (list (current-buffer) a b (buffer-substring-no-properties beg end)) typst-inline-math--requests)
-                               (process-send-string typst-inline-math--process (concat (json-encode `((id . ,id) (math . ,math) (size . ,typst-inline-math-font-size) (foreground . ,(typst-inline-math--foreground)))) "\n"))))
+                               (process-send-string typst-inline-math--process (concat (json-encode `((id . ,id) (math . ,math) (size . ,(typst-inline-math--font-size beg)) (foreground . ,(typst-inline-math--foreground)))) "\n"))))
 (defun typst-inline-math--install (q svg)
   (pcase-let ((`(,buf ,a ,b ,source) q))
     (when (buffer-live-p buf) (with-current-buffer buf
@@ -96,6 +118,21 @@
 (defun typst-inline-math--changed (&rest _)
   (typst-inline-math--refresh) (when (timerp typst-inline-math--timer) (cancel-timer typst-inline-math--timer))
   (setq typst-inline-math--timer (run-with-idle-timer .25 nil (lambda (b) (when (buffer-live-p b) (with-current-buffer b (typst-inline-math--refresh)))) (current-buffer))))
+(defun typst-inline-math--font-changed (&rest _)
+  "Re-render active previews after a global font change."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when typst-inline-math-mode
+        (typst-inline-math--refresh)))))
+(defun typst-inline-math--text-scale-changed (&rest _)
+  "Re-render this buffer after `text-scale-mode' changes its remapping."
+  (when typst-inline-math-mode
+    (typst-inline-math--refresh)))
+(unless typst-inline-math--font-hook-installed
+  (add-hook 'after-setting-font-hook #'typst-inline-math--font-changed)
+  (with-eval-after-load 'face-remap
+    (advice-add 'text-scale-mode :after #'typst-inline-math--text-scale-changed))
+  (setq typst-inline-math--font-hook-installed t))
 (define-minor-mode typst-inline-math-mode "Render Typst math via typst-renderd IPC." :lighter " TMath"
   (if typst-inline-math-mode (progn (add-hook 'after-change-functions #'typst-inline-math--changed nil t) (add-hook 'post-command-hook #'typst-inline-math--active nil t) (typst-inline-math--refresh))
     (remove-hook 'after-change-functions #'typst-inline-math--changed t) (remove-hook 'post-command-hook #'typst-inline-math--active t) (typst-inline-math--remove)))
