@@ -26,4 +26,5 @@ Place this directory in your Doom configuration and add the following to
 ```
 
 Enable `typst-inline-math-mode` in buffers where inline `$...$` math should be
-rendered.
+rendered.  Multiline `$...$` math blocks are previewed one nonblank line at a
+time, preserving the block's line-by-line layout.
