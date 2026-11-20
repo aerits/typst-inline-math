@@ -28,6 +28,19 @@ When nil, use the release binaries built in this package."
   :type 'number
   :group 'org-latex-typst-preview)
 
+(defcustom org-latex-typst-preview-hover-preview nil
+  "Show the active preview enlarged below the cursor's line.
+
+When non-nil, the LaTeX fragment at point retains its normal inline preview
+and also appears enlarged on a fake physical line below the cursor."
+  :type 'boolean
+  :group 'org-latex-typst-preview)
+
+(defcustom org-latex-typst-preview-hover-preview-scale 3.0
+  "Scale applied to a floating active preview."
+  :type 'number
+  :group 'org-latex-typst-preview)
+
 (defvar org-latex-typst-preview--process nil)
 (defvar org-latex-typst-preview--partial "")
 (defvar org-latex-typst-preview--next-id 0)
@@ -35,6 +48,11 @@ When nil, use the release binaries built in this package."
 (defvar org-latex-typst-preview-mode nil)
 (defvar-local org-latex-typst-preview--timer nil)
 (defvar-local org-latex-typst-preview--active nil)
+(defvar-local org-latex-typst-preview--hover-overlay nil)
+(defvar-local org-latex-typst-preview--hover-svg nil)
+(defvar-local org-latex-typst-preview--hover-position nil)
+(defvar-local org-latex-typst-preview--hover-scale nil)
+(defvar-local org-latex-typst-preview--hover-width nil)
 (defvar org-latex-typst-preview--font-hook-installed nil)
 
 (defun org-latex-typst-preview--command ()
@@ -60,9 +78,9 @@ When nil, use the release binaries built in this package."
                        1.0)))
     (format "%.3fpt" (* text-scale (/ height 10.0)))))
 
-(defun org-latex-typst-preview--image (svg)
+(defun org-latex-typst-preview--image (svg &optional scale)
   (list 'image :type 'svg :data svg :ascent 'center
-        :scale org-latex-typst-preview-scale))
+        :scale (or scale org-latex-typst-preview-scale)))
 
 (defun org-latex-typst-preview--math-body (value)
   "Remove Org's LaTeX delimiters from VALUE, retaining only math syntax."
@@ -105,7 +123,97 @@ When nil, use the release binaries built in this package."
 (defun org-latex-typst-preview--clear ()
   "Remove every preview, including the active source-editing anchor."
   (remove-overlays (point-min) (point-max) 'org-latex-typst-preview t)
-  (setq org-latex-typst-preview--active nil))
+  (setq org-latex-typst-preview--active nil)
+  (org-latex-typst-preview--hide-hover-preview))
+
+(defun org-latex-typst-preview--hide-hover-preview ()
+  "Remove the fake preview line for the current buffer."
+  (when (overlayp org-latex-typst-preview--hover-overlay)
+    (delete-overlay org-latex-typst-preview--hover-overlay))
+  (setq org-latex-typst-preview--hover-overlay nil
+        org-latex-typst-preview--hover-position nil))
+
+(defun org-latex-typst-preview--destroy-hover-preview ()
+  "Remove the fake preview line and discard its cached image."
+  (org-latex-typst-preview--hide-hover-preview)
+  (setq org-latex-typst-preview--hover-svg nil
+        org-latex-typst-preview--hover-scale nil
+        org-latex-typst-preview--hover-width nil))
+
+(defun org-latex-typst-preview--next-visual-line-position ()
+  "Return the buffer position at the start of the next visual line."
+  (save-excursion
+    (vertical-motion 1 (selected-window))
+    (point)))
+
+(defun org-latex-typst-preview--hover-image (svg)
+  "Return an image for SVG that fits within the selected window's width."
+  (let* ((scale org-latex-typst-preview-hover-preview-scale)
+         (image (org-latex-typst-preview--image svg scale))
+         (size (image-size image t))
+         (image-width (and (consp size) (car size)))
+         (window-width (max 1 (- (window-body-width (selected-window) t) 16)))
+         (effective-scale
+          (if (and (numberp image-width) (> image-width window-width))
+              (* scale (/ (float window-width) image-width))
+            scale)))
+    (list (if (= effective-scale scale)
+              image
+            (org-latex-typst-preview--image svg effective-scale))
+          effective-scale window-width)))
+
+(defun org-latex-typst-preview--show-hover-preview (svg)
+  "Show SVG on a fake physical line below the current visual line."
+  (if (not org-latex-typst-preview-hover-preview)
+      (org-latex-typst-preview--hide-hover-preview)
+    (let* ((image-info (org-latex-typst-preview--hover-image svg))
+           (image (nth 0 image-info))
+           (scale (nth 1 image-info))
+           (window-width (nth 2 image-info))
+           (position (org-latex-typst-preview--next-visual-line-position))
+           ;; A real newline already follows a completed logical line.  At a
+           ;; wrapped line boundary, add one so the image gets its own row.
+           (prefix (if (eq (char-before position) ?\n) "" "\n"))
+           (line (concat prefix (propertize " " 'display image) "\n")))
+      (unless (and (org-latex-typst-preview--live-overlay-p
+                    org-latex-typst-preview--hover-overlay)
+                   (equal svg org-latex-typst-preview--hover-svg)
+                   (= position org-latex-typst-preview--hover-position)
+                   (equal scale org-latex-typst-preview--hover-scale)
+                   (equal window-width org-latex-typst-preview--hover-width))
+        (org-latex-typst-preview--hide-hover-preview)
+        (let ((overlay (make-overlay position position nil nil t)))
+          (overlay-put overlay 'after-string line)
+          (setq org-latex-typst-preview--hover-overlay overlay
+                org-latex-typst-preview--hover-svg svg
+                org-latex-typst-preview--hover-position position
+                org-latex-typst-preview--hover-scale scale
+                org-latex-typst-preview--hover-width window-width))))))
+
+(defun org-latex-typst-preview--update-hover-preview ()
+  "Show the active preview below point, or hide an existing one."
+  (if (and (org-latex-typst-preview--live-overlay-p
+            org-latex-typst-preview--active)
+           (overlay-get org-latex-typst-preview--active
+                        'org-latex-typst-preview-svg))
+      (org-latex-typst-preview--show-hover-preview
+       (overlay-get org-latex-typst-preview--active
+                    'org-latex-typst-preview-svg))
+    (org-latex-typst-preview--hide-hover-preview))
+  (when (org-latex-typst-preview--live-overlay-p
+         org-latex-typst-preview--active)
+    (let ((anchor (overlay-get org-latex-typst-preview--active
+                               'org-latex-typst-preview-anchor)))
+      (when (overlayp anchor)
+        (overlay-put anchor 'after-string
+                     (org-latex-typst-preview--active-after-string
+                      (overlay-get org-latex-typst-preview--active
+                                   'org-latex-typst-preview-svg)))))))
+
+(defun org-latex-typst-preview--reload ()
+  "Clear and re-render every preview in the current buffer."
+  (org-latex-typst-preview--clear)
+  (org-latex-typst-preview--refresh))
 
 (defun org-latex-typst-preview--fragments ()
   "Return (BEGIN END LATEX) records for Org LaTeX fragments."
@@ -189,7 +297,17 @@ interrupted or came from an older version of the pipeline."
 (defun org-latex-typst-preview--active-after-string (svg)
   "Return the source-editing anchor that displays SVG after point."
   (concat (propertize " " 'cursor t)
-          (propertize " " 'display (org-latex-typst-preview--image svg))))
+          (unless (and org-latex-typst-preview-hover-preview
+                       (overlayp org-latex-typst-preview--hover-overlay)
+                       (overlay-buffer org-latex-typst-preview--hover-overlay))
+            (propertize " " 'display (org-latex-typst-preview--image svg)))))
+
+(defun org-latex-typst-preview--live-overlay-p (overlay)
+  "Return non-nil when OVERLAY has valid positions in a live buffer."
+  (and (overlayp overlay)
+       (overlay-buffer overlay)
+       (integer-or-marker-p (overlay-start overlay))
+       (integer-or-marker-p (overlay-end overlay))))
 
 (defun org-latex-typst-preview--install (request svg)
   (pcase-let ((`(,buffer ,begin ,end ,source) request))
@@ -217,6 +335,7 @@ interrupted or came from an older version of the pipeline."
                         (when (overlayp anchor)
                           (overlay-put anchor 'after-string
                                        (org-latex-typst-preview--active-after-string svg)))
+                        (org-latex-typst-preview--update-hover-preview)
                         ;; An overlay installed while point is inside it has
                         ;; no anchor yet.
                         (unless (overlayp anchor)
@@ -265,28 +384,41 @@ This mirrors `typst-inline-math-mode': the source overlay is hidden only
 while editing, and a zero-width anchor at its end displays the preview after
 the source.  Thus point remains in editable LaTeX without making the preview
 disappear."
-  (let ((next (cl-find-if
-               (lambda (overlay) (overlay-get overlay 'org-latex-typst-preview))
-               (overlays-at (point)))) )
-    (unless (eq next org-latex-typst-preview--active)
-      (when (overlayp org-latex-typst-preview--active)
-        (let ((anchor (overlay-get org-latex-typst-preview--active
-                                   'org-latex-typst-preview-anchor)))
-          (when (overlayp anchor) (delete-overlay anchor)))
-        (overlay-put org-latex-typst-preview--active
-                     'org-latex-typst-preview-anchor nil)
-        (org-latex-typst-preview--show org-latex-typst-preview--active))
-      (setq org-latex-typst-preview--active next)
-      (when next
-        (let ((anchor (make-overlay (overlay-end next) (overlay-end next)
-                                    nil nil t)))
-          (overlay-put next 'display nil)
-          (overlay-put anchor 'org-latex-typst-preview t)
-          ;; The cursor-marked space keeps point before the preview image.
-          (overlay-put anchor 'after-string
-                       (org-latex-typst-preview--active-after-string
-                        (overlay-get next 'org-latex-typst-preview-svg)))
-          (overlay-put next 'org-latex-typst-preview-anchor anchor))))))
+  (condition-case err
+      (progn
+        (unless (org-latex-typst-preview--live-overlay-p
+                 org-latex-typst-preview--active)
+          (setq org-latex-typst-preview--active nil))
+        (let ((next (cl-find-if
+                     (lambda (overlay)
+                       (and (org-latex-typst-preview--live-overlay-p overlay)
+                            (overlay-get overlay 'org-latex-typst-preview)))
+                     (overlays-at (point)))))
+          (unless (eq next org-latex-typst-preview--active)
+            (when (org-latex-typst-preview--live-overlay-p
+                   org-latex-typst-preview--active)
+              (let ((anchor (overlay-get org-latex-typst-preview--active
+                                         'org-latex-typst-preview-anchor)))
+                (when (overlayp anchor) (delete-overlay anchor)))
+              (overlay-put org-latex-typst-preview--active
+                           'org-latex-typst-preview-anchor nil)
+              (org-latex-typst-preview--show org-latex-typst-preview--active))
+            (setq org-latex-typst-preview--active next)
+            (when next
+              (let ((anchor (make-overlay (overlay-end next) (overlay-end next)
+                                          nil nil t)))
+                (overlay-put next 'display nil)
+                (overlay-put anchor 'org-latex-typst-preview t)
+                ;; The cursor-marked space keeps point before the preview image.
+                (overlay-put anchor 'after-string
+                             (org-latex-typst-preview--active-after-string
+                              (overlay-get next 'org-latex-typst-preview-svg)))
+                (overlay-put next 'org-latex-typst-preview-anchor anchor)))))
+        (org-latex-typst-preview--update-hover-preview))
+    (error
+     (org-latex-typst-preview--reload)
+     (message "org-latex-typst-preview: reloaded after error: %s"
+              (error-message-string err)))))
 
 (defun org-latex-typst-preview--font-changed (&rest _)
   "Re-render every active Org preview after a frame font change."
@@ -317,7 +449,8 @@ disappear."
         (org-latex-typst-preview--refresh))
     (remove-hook 'after-change-functions #'org-latex-typst-preview--changed t)
     (remove-hook 'post-command-hook #'org-latex-typst-preview--reveal-at-point t)
-    (org-latex-typst-preview--clear)))
+    (org-latex-typst-preview--clear)
+    (org-latex-typst-preview--destroy-hover-preview)))
 
 (provide 'org-latex-typst-preview)
 ;;; org-latex-typst-preview.el ends here
