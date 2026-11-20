@@ -17,10 +17,21 @@
   "Render Org LaTeX fragments with Typst."
   :group 'org)
 
+(defcustom org-latex-typst-preview-renderd-command
+  (list (expand-file-name "typst-renderd/target/release/typst-renderd"
+                          org-latex-typst-preview--directory))
+  "Command and arguments used to start typst-renderd.
+The Org preview client appends --mitex-package to this command.
+For Nix, use (\"nix\" \"run\" \"path:/absolute/path/to/typst-renderd\" \"--\")."
+  :type '(repeat string)
+  :group 'org-latex-typst-preview)
+
 (defcustom org-latex-typst-preview-command nil
   "Command used for the MiTeX-backed `typst-renderd' preview pipeline.
-When nil, use the release binaries built in this package."
-  :type '(choice (const :tag "Package binaries" nil) (repeat string))
+When nil, append --mitex-package to
+`org-latex-typst-preview-renderd-command'.
+When non-nil, this overrides the complete command, including mode arguments."
+  :type '(choice (const :tag "Renderer command with MiTeX" nil) (repeat string))
   :group 'org-latex-typst-preview)
 
 (defcustom org-latex-typst-preview-scale 1.0
@@ -39,11 +50,7 @@ When nil, use the release binaries built in this package."
 
 (defun org-latex-typst-preview--command ()
   (or org-latex-typst-preview-command
-      (let ((bin (expand-file-name "typst-renderd/target/release/"
-                                   org-latex-typst-preview--directory)))
-        (list shell-file-name shell-command-switch
-              (concat (shell-quote-argument (expand-file-name "typst-renderd" bin))
-                      " --mitex-package")))))
+      (append org-latex-typst-preview-renderd-command '("--mitex-package"))))
 
 (defun org-latex-typst-preview--foreground ()
   (let ((rgb (color-values (face-attribute 'default :foreground nil t))))
